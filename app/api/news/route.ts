@@ -30,6 +30,6 @@ export async function GET() {
     }).filter((item) => item.title);
     return Response.json({ items, updatedAt: new Date().toISOString(), stale: false }, { headers: { "Cache-Control": "public, max-age=600, s-maxage=600, stale-while-revalidate=1800" } });
   } catch {
-    return Response.json({ items: [{ id: "fallback-1", title: "A股市场资讯暂时无法连接，请稍后刷新", source: "盘面", category: "市场", url: "https://finance.sina.com.cn/stock/", publishedAt: new Date().toISOString() }], updatedAt: new Date().toISOString(), stale: true }, { headers: { "Cache-Control": "public, max-age=60" } });
+    return Response.json({ items: [{ id: "fallback-1", title: "A股市场资讯暂时无法连接，请稍后刷新", source: "微光", category: "市场", url: "https://finance.sina.com.cn/stock/", publishedAt: new Date().toISOString() }], updatedAt: new Date().toISOString(), stale: true }, { headers: { "Cache-Control": "public, max-age=60" } });
   }
 }

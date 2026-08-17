@@ -17,6 +17,7 @@ type SortKey = "change" | "turnoverRate" | "volumeRatio" | "pe" | "price" | "mar
 type FilterKey = Exclude<SortKey, "turnover">;
 type Range = { min: string; max: string };
 type Theme = "light" | "dark";
+type View = "overview" | "news" | "stocks" | "ideas";
 
 const placeholderIndices: IndexQuote[] = [
   { name: "上证指数", code: "000001", secid: "sh000001", price: 3982.65, change: 1.41, changeAmount: 55.47, high: 3983.51, low: 3924.47, open: 3930.1, previousClose: 3927.18, volume: 706246394459 },
@@ -27,7 +28,7 @@ const placeholderIndices: IndexQuote[] = [
 ];
 
 const initialSnapshot: DailySnapshot = {
-  tradeDate: "2026-08-17", generatedAt: new Date().toISOString(), nextRefreshAt: new Date(Date.now() + 86400000).toISOString(), status: "provisional",
+  tradeDate: "2026-08-17", generatedAt: "2026-08-17T07:35:00.000Z", nextRefreshAt: "2026-08-18T07:35:00.000Z", status: "provisional",
   indices: placeholderIndices, sectors: [], totalStocks: 0, universe: [], recommendations: [], news: [],
   summary: { averageIndexChange: 0, positiveIndices: 0, topSector: "—", sampleSize: 0 },
 };
@@ -111,6 +112,14 @@ export function MarketDashboard() {
   const [searchResults, setSearchResults] = useState<StockQuote[]>([]);
   const [searching, setSearching] = useState(false);
   const [theme, setTheme] = useState<Theme>("light");
+  const [activeView, setActiveView] = useState<View>("overview");
+  const [allStocks, setAllStocks] = useState<StockQuote[]>([]);
+  const [allStockTotal, setAllStockTotal] = useState(0);
+  const [stocksLoading, setStocksLoading] = useState(false);
+  const [stocksError, setStocksError] = useState("");
+  const [loadedBatches, setLoadedBatches] = useState(0);
+  const [stockBatchCount, setStockBatchCount] = useState(0);
+  const [stockPage, setStockPage] = useState(1);
   const searchWrap = useRef<HTMLDivElement>(null);
 
   const loadDaily = useCallback(async (manual = false) => {
@@ -131,6 +140,47 @@ export function MarketDashboard() {
     const activeTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     setTheme(activeTheme);
   }, []);
+
+  useEffect(() => {
+    const fromHash = (): View => {
+      if (window.location.hash === "#news") return "news";
+      if (window.location.hash === "#stocks") return "stocks";
+      if (window.location.hash === "#ideas") return "ideas";
+      return "overview";
+    };
+    const sync = () => setActiveView(fromHash());
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, []);
+
+  const loadAllStocks = useCallback(async () => {
+    setStocksLoading(true);
+    setStocksError("");
+    setLoadedBatches(0);
+    try {
+      const getBatch = async (batch: number) => {
+        const response = await fetch(`/api/stocks?batch=${batch}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("A股行情暂时不可用");
+        const payload = await response.json() as { items: StockQuote[]; total: number; batchCount: number };
+        setLoadedBatches((count) => count + 1);
+        return payload;
+      };
+      const first = await getBatch(0);
+      setAllStockTotal(first.total);
+      setStockBatchCount(first.batchCount);
+      const rest = await Promise.all(Array.from({ length: Math.max(0, first.batchCount - 1) }, (_, index) => getBatch(index + 1)));
+      setAllStocks([first, ...rest].flatMap((batch) => batch.items));
+    } catch (error) {
+      setStocksError(error instanceof Error ? error.message : "A股行情暂时不可用");
+    } finally {
+      setStocksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "stocks" && !allStocks.length && !stocksLoading && !stocksError) void loadAllStocks();
+  }, [activeView, allStocks.length, stocksLoading, stocksError, loadAllStocks]);
 
   useEffect(() => {
     const delay = Math.max(60000, new Date(snapshot.nextRefreshAt).getTime() - Date.now() + 120000);
@@ -186,7 +236,7 @@ export function MarketDashboard() {
   const activeFilterCount = useMemo(() => Object.values(filters).filter((range) => range.min !== "" || range.max !== "").length, [filters]);
 
   const rankingRows = useMemo(() => {
-    const source = listMode === "market" ? snapshot.universe : watchlist;
+    const source = listMode === "market" ? allStocks : watchlist;
     const metricValue = (stock: StockQuote, key: SortKey) => stock[key];
     return source.filter((stock) => filterFields.every(({ key }) => {
       const raw = key === "marketCap" ? stock.marketCap / 1e8 : stock[key];
@@ -194,7 +244,13 @@ export function MarketDashboard() {
       const maximum = filters[key].max === "" ? Infinity : Number(filters[key].max);
       return raw >= minimum && raw <= maximum;
     })).sort((a, b) => (metricValue(a, sortKey) - metricValue(b, sortKey)) * (descending ? -1 : 1));
-  }, [snapshot.universe, watchlist, listMode, filters, sortKey, descending]);
+  }, [allStocks, watchlist, listMode, filters, sortKey, descending]);
+
+  useEffect(() => { setStockPage(1); }, [filters, sortKey, descending, listMode]);
+
+  const rowsPerPage = 50;
+  const stockPageCount = Math.max(1, Math.ceil(rankingRows.length / rowsPerPage));
+  const visibleRankingRows = rankingRows.slice((stockPage - 1) * rowsPerPage, stockPage * rowsPerPage);
 
   const updateFilter = (key: FilterKey, side: keyof Range, value: string) => setFilters((current) => ({ ...current, [key]: { ...current[key], [side]: value } }));
   const toggleTheme = () => {
@@ -202,6 +258,11 @@ export function MarketDashboard() {
     document.documentElement.dataset.theme = nextTheme;
     window.localStorage.setItem("panmian-theme", nextTheme);
     setTheme(nextTheme);
+  };
+  const selectView = (view: View) => {
+    setActiveView(view);
+    window.history.pushState(null, "", view === "overview" ? window.location.pathname : `#${view}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const preset = (name: "active" | "value" | "midcap") => {
     const next = emptyFilters();
@@ -214,8 +275,8 @@ export function MarketDashboard() {
   return (
     <main className="site-shell" id="top">
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="盘面首页"><span className="brand-mark">盘</span><span>盘面</span><span className="brand-tag">A股收盘研究台</span></a>
-        <nav className="nav" aria-label="主导航"><a href="#market">总览</a><a href="#ideas">选股建议</a><a href="#rankings">筛选榜单</a><a href="#news">每日热讯</a></nav>
+        <button className="brand" type="button" onClick={() => selectView("overview")} aria-label="微光首页"><span className="brand-mark">微</span><span>微光</span><span className="brand-tag">A股收盘研究台</span></button>
+        <nav className="nav" aria-label="主导航"><button className={activeView === "news" ? "active" : ""} type="button" onClick={() => selectView("news")}>每日资讯</button><button className={activeView === "stocks" ? "active" : ""} type="button" onClick={() => selectView("stocks")}>个股信息</button><button className={activeView === "ideas" ? "active" : ""} type="button" onClick={() => selectView("ideas")}>选股建议</button></nav>
         <div className="stock-search" ref={searchWrap}>
           <label className="sr-only" htmlFor="stock-search">搜索股票</label><span aria-hidden="true">⌕</span>
           <input id="stock-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索代码 / 名称" autoComplete="off" />
@@ -233,13 +294,13 @@ export function MarketDashboard() {
         <button type="button" onClick={() => void loadDaily(true)} disabled={refreshing}>{refreshing ? "正在检查" : "检查更新"}</button>
       </div>
 
-      <section className="overview" id="market">
+      {activeView === "overview" && <section className="overview" id="market">
         <div className="section-title compact-title"><div><p>DAILY MARKET CLOSE</p><h1>收盘总览</h1></div><span>每日 15:35 后更新 · 盘中保留上一交易日定稿</span></div>
         <div className="summary-grid">
           <article><span>核心指数红盘</span><b>{snapshot.summary.positiveIndices}<small> / {snapshot.indices.length}</small></b><em>市场广度</em></article>
           <article><span>指数平均涨跌</span><Tone value={snapshot.summary.averageIndexChange}><b>{signed(snapshot.summary.averageIndexChange)}<small>%</small></b></Tone><em>等权口径</em></article>
           <article><span>最强行业指数</span><b className="text-value">{snapshot.summary.topSector}</b><em>按收盘涨幅</em></article>
-          <article><span>筛选样本池</span><b>{snapshot.summary.sampleSize}<small> 只</small></b><em>活跃与高关注股票</em></article>
+          <article><span>A股股票总数</span><b>{snapshot.totalStocks}<small> 只</small></b><em>沪深北市场</em></article>
         </div>
         <div className="indices">
           {snapshot.indices.map((item) => <article className="index-card" key={item.secid}>
@@ -250,9 +311,9 @@ export function MarketDashboard() {
           </article>)}
         </div>
         <div className="sector-tape"><b>强势行业</b>{snapshot.sectors.map((item, index) => <span key={item.code}><i>{index + 1}</i>{item.name}<Tone value={item.change}>{signed(item.change)}%</Tone></span>)}</div>
-      </section>
+      </section>}
 
-      <section className="ideas-section" id="ideas">
+      {activeView === "ideas" && <section className="ideas-section" id="ideas">
         <div className="section-title"><div><p>STOCK SELECTION</p><h2>选股建议</h2></div><div className="method-note"><b>六因子量化初筛</b><span>涨幅 · 换手率 · 量比 · 成交额 · 市盈率 · 市值</span></div></div>
         <div className="idea-disclaimer"><b>观察名单，不是买入指令。</b> 基于 {formatTradeDate(snapshot.tradeDate)} 收盘数据生成；未纳入收盘后公告、隔夜消息、次日跳空等变量，任何信号都可能失效。</div>
         <div className="idea-grid">
@@ -267,13 +328,15 @@ export function MarketDashboard() {
           </article>)}
           {!snapshot.recommendations.length && <div className="empty-state">正在生成选股建议…</div>}
         </div>
-      </section>
+      </section>}
 
-      <section className="rank-section" id="rankings">
-        <div className="section-title"><div><p>MARKET SCREENER</p><h2>多指标榜单</h2></div><span className="sample-note">覆盖当日高关注与活跃样本 {snapshot.universe.length} 只</span></div>
+      {activeView === "stocks" && <section className="rank-section" id="stocks">
+        <div className="section-title"><div><p>A-SHARE UNIVERSE</p><h2>个股信息</h2></div><span className="sample-note">覆盖沪深北 A 股 {allStockTotal || snapshot.totalStocks} 只</span></div>
         <div className="screener">
+          {stocksLoading && <div className="stocks-loading"><b>正在载入完整 A 股行情</b><span>{stockBatchCount ? `${loadedBatches} / ${stockBatchCount} 批` : "正在准备数据"}</span><i><em style={{ width: stockBatchCount ? `${Math.max(6, loadedBatches / stockBatchCount * 100)}%` : "6%" }} /></i></div>}
+          {stocksError && <div className="stocks-error"><span>{stocksError}</span><button type="button" onClick={() => { setStocksError(""); void loadAllStocks(); }}>重新加载</button></div>}
           <div className="screener-toolbar">
-            <div className="mode-tabs"><button className={listMode === "market" ? "active" : ""} onClick={() => setListMode("market")}>市场样本</button><button className={listMode === "watchlist" ? "active" : ""} onClick={() => setListMode("watchlist")}>我的自选 <span>{watchlist.length}</span></button></div>
+            <div className="mode-tabs"><button className={listMode === "market" ? "active" : ""} onClick={() => setListMode("market")}>全部 A 股</button><button className={listMode === "watchlist" ? "active" : ""} onClick={() => setListMode("watchlist")}>我的自选 <span>{watchlist.length}</span></button></div>
             <label>排序指标<select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>{sortOptions.map((option) => <option value={option.key} key={option.key}>{option.label}</option>)}</select></label>
             <button className="order-button" type="button" onClick={() => setDescending((value) => !value)}>{descending ? "从高到低 ↓" : "从低到高 ↑"}</button>
             <div className="preset-buttons"><span>快捷：</span><button onClick={() => preset("active")}>放量活跃</button><button onClick={() => preset("value")}>低估值</button><button onClick={() => preset("midcap")}>中小市值</button></div>
@@ -282,23 +345,24 @@ export function MarketDashboard() {
           <div className="filter-grid">
             {filterFields.map((field) => <label key={field.key}><span>{field.label}<i>{field.unit}</i></span><div><input type="number" step={field.step} value={filters[field.key].min} onChange={(event) => updateFilter(field.key, "min", event.target.value)} placeholder="不限" aria-label={`${field.label}最小值`} /><b>—</b><input type="number" step={field.step} value={filters[field.key].max} onChange={(event) => updateFilter(field.key, "max", event.target.value)} placeholder="不限" aria-label={`${field.label}最大值`} /></div></label>)}
           </div>
-          <div className="result-bar"><b>{rankingRows.length}</b> 只符合条件 <span>当前按“{sortOptions.find((item) => item.key === sortKey)?.label}”{descending ? "降序" : "升序"}</span></div>
+          <div className="result-bar"><b>{rankingRows.length}</b> 只符合条件 <span>当前按“{sortOptions.find((item) => item.key === sortKey)?.label}”{descending ? "降序" : "升序"} · 第 {stockPage} / {stockPageCount} 页</span></div>
           <div className="stock-table-wrap"><table className="stock-table">
             <thead><tr><th>#</th><th>股票</th><th>收盘价</th><th>涨幅</th><th>换手率</th><th>量比</th><th>市盈率</th><th>总市值</th><th>成交额</th><th>自选</th></tr></thead>
-            <tbody>{rankingRows.slice(0, 30).map((item, index) => <tr key={item.secid}><td>{String(index + 1).padStart(2, "0")}</td><td><b>{item.name}</b><small>{item.code}</small></td><td>{item.price.toFixed(2)}</td><td><Tone value={item.change}>{signed(item.change)}%</Tone></td><td>{item.turnoverRate.toFixed(2)}%</td><td>{item.volumeRatio ? item.volumeRatio.toFixed(2) : "—"}</td><td>{item.pe > 0 ? item.pe.toFixed(1) : "亏损"}</td><td>{compact(item.marketCap)}</td><td>{compact(item.turnover)}</td><td><button type="button" className={isWatched(item.secid) ? "watch active" : "watch"} onClick={() => toggleWatch(item)} aria-label={isWatched(item.secid) ? `移除${item.name}自选` : `添加${item.name}自选`}>{isWatched(item.secid) ? "★" : "☆"}</button></td></tr>)}</tbody>
-          </table>{!rankingRows.length && <div className="empty-state">没有符合当前组合条件的股票，请放宽筛选范围。</div>}</div>
+            <tbody>{visibleRankingRows.map((item, index) => <tr key={item.secid}><td>{String((stockPage - 1) * rowsPerPage + index + 1).padStart(2, "0")}</td><td><b>{item.name}</b><small>{item.code}</small></td><td>{item.price.toFixed(2)}</td><td><Tone value={item.change}>{signed(item.change)}%</Tone></td><td>{item.turnoverRate.toFixed(2)}%</td><td>{item.volumeRatio ? item.volumeRatio.toFixed(2) : "—"}</td><td>{item.pe > 0 ? item.pe.toFixed(1) : "亏损"}</td><td>{compact(item.marketCap)}</td><td>{compact(item.turnover)}</td><td><button type="button" className={isWatched(item.secid) ? "watch active" : "watch"} onClick={() => toggleWatch(item)} aria-label={isWatched(item.secid) ? `移除${item.name}自选` : `添加${item.name}自选`}>{isWatched(item.secid) ? "★" : "☆"}</button></td></tr>)}</tbody>
+          </table>{!stocksLoading && !rankingRows.length && <div className="empty-state">没有符合当前组合条件的股票，请放宽筛选范围。</div>}</div>
+          {!!rankingRows.length && <div className="pagination"><button type="button" onClick={() => setStockPage(1)} disabled={stockPage === 1}>首页</button><button type="button" onClick={() => setStockPage((page) => Math.max(1, page - 1))} disabled={stockPage === 1}>上一页</button><b>{stockPage} / {stockPageCount}</b><button type="button" onClick={() => setStockPage((page) => Math.min(stockPageCount, page + 1))} disabled={stockPage === stockPageCount}>下一页</button><button type="button" onClick={() => setStockPage(stockPageCount)} disabled={stockPage === stockPageCount}>末页</button></div>}
         </div>
-      </section>
+      </section>}
 
-      <section className="news-section" id="news">
-        <div className="section-title"><div><p>DAILY HOT SIGNALS</p><h2>每日热门快讯</h2></div><div className="method-note"><b>每日收盘后定稿</b><span>按 A 股相关性、焦点标签、互动与时效综合排序</span></div></div>
+      {activeView === "news" && <section className="news-section" id="news">
+        <div className="section-title"><div><p>DAILY HOT SIGNALS</p><h2>每日资讯</h2></div><div className="method-note"><b>每日收盘后定稿</b><span>按 A 股相关性、焦点标签、互动与时效综合排序</span></div></div>
         <div className="news-list">
           {snapshot.news.map((item, index) => <a href={item.url} target="_blank" rel="noreferrer" key={item.id}><span className="news-rank">{String(index + 1).padStart(2, "0")}</span><div><p><span>{item.category}</span>{item.source} · {dayAndTime(item.publishedAt)}</p><h3>{item.title}</h3></div><b className="heat"><i style={{ width: `${item.heat}%` }} />热度 {item.heat}</b><span className="news-arrow">↗</span></a>)}
           {!snapshot.news.length && <div className="empty-state">正在汇总今日热门资讯…</div>}
         </div>
-      </section>
+      </section>}
 
-      <footer className="site-footer"><div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股收盘研究台</small></p></div><p>每日 15:35 后刷新收盘价格、热门资讯与选股建议<br />行情与资讯来自新浪财经、腾讯行情公开数据</p><p>选股建议由规则模型生成，不构成投资建议<br />市场有风险，投资需谨慎</p></footer>
+      <footer className="site-footer"><div><span className="brand-mark small">微</span><p><b>微光</b><small>A股收盘研究台</small></p></div><p>每日 15:35 后刷新收盘价格、热门资讯与选股建议<br />行情与资讯来自新浪财经、腾讯行情公开数据</p><p>选股建议由规则模型生成，不构成投资建议<br />市场有风险，投资需谨慎</p></footer>
     </main>
   );
 }
