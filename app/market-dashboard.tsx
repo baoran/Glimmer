@@ -323,7 +323,7 @@ export function MarketDashboard() {
 
       <footer className="site-footer">
         <div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股市场雷达</small></p></div>
-        <p>行情自动刷新 · 新闻每 15 分钟更新<br />行情数据来自东方财富公开行情，资讯聚合自 Google 新闻</p>
+        <p>行情自动刷新 · 新闻每 15 分钟更新<br />行情与资讯来自新浪财经、腾讯行情公开数据</p>
         <p>数据仅供参考，不构成任何投资建议<br />市场有风险，投资需谨慎</p>
       </footer>
 
