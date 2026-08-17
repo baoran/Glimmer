@@ -23,15 +23,28 @@ type SinaFeed = {
   like_nums?: number; comment_list?: { list?: unknown[] };
 };
 
+type ClsFeed = {
+  id?: number; title?: string; brief?: string; content?: string; ctime?: number; reading_num?: number;
+  share_num?: number; level?: string; stock_list?: unknown[]; subjects?: Array<{ subject_name?: string }>;
+};
+
+type ThsFeed = {
+  id?: string; seq?: string; title?: string; digest?: string; url?: string; ctime?: string;
+  tags?: Array<{ name?: string }>; tag?: string;
+};
+
+type NewsItem = { id: string; title: string; source: string; category: string; url: string; publishedAt: string; heat: number };
+
 type Recommendation = StockQuote & {
   score: number; style: string; reasons: string[]; risks: string[];
 };
 
 type DailySnapshot = {
+  contentVersion: number;
   tradeDate: string; generatedAt: string; nextRefreshAt: string; status: "final" | "provisional";
-  indices: IndexQuote[]; sectors: Array<{ name: string; code: string; price: number; change: number }>;
+  indices: IndexQuote[]; sectors: Array<{ name: string; code: string; price: number; change: number; turnover: number }>;
   totalStocks: number; universe: StockQuote[]; recommendations: Recommendation[];
-  news: Array<{ id: string; title: string; source: string; category: string; url: string; publishedAt: string; heat: number }>;
+  news: NewsItem[];
   summary: { averageIndexChange: number; positiveIndices: number; topSector: string; sampleSize: number };
 };
 
@@ -127,18 +140,20 @@ function cleanText(value: string) {
 
 function newsCategory(tags: SinaTag[] = [], title = "") {
   const names = tags.map((tag) => tag.name);
-  if (names.includes("公司") || /公司|业绩|回购|增持|减持|重组|上市/.test(title)) return "公司";
+  if (names.includes("公司") || /公司|业绩|回购|增持|减持|重组|上市|公告/.test(title)) return "公司";
   if (/政策|央行|证监|监管|国务院|交易所/.test(title)) return "政策";
-  if (/板块|行业|科技|消费|医药|金融|能源|芯片|人工智能/.test(title)) return "行业";
+  if (/板块|行业|科技|消费|医药|金融|能源|芯片|人工智能|概念/.test(title)) return "行业";
   return "市场";
 }
 
-async function fetchHotNews(tradeDate: string) {
+const marketRelevant = /A股|沪深|上证|深证|创业板|科创|北交所|股票|个股|涨停|跌停|股价|收盘|板块|上市|回购|业绩|证券|ETF|成交额|市值|公司|概念|资金|主力/;
+
+async function fetchSinaNews(tradeDate: string): Promise<NewsItem[]> {
   const feedUrl = (tag: number) => `https://zhibo.sina.com.cn/api/zhibo/feed?callback=&page=1&page_size=50&zhibo_id=152&tag_id=${tag}&dire=f&dpc=1`;
   const responses = await Promise.all([9, 10, 3].map((tag) => fetch(feedUrl(tag), { headers: { ...REQUEST_HEADERS, Referer: "https://finance.sina.com.cn/7x24/" } })));
+  if (responses.some((response) => !response.ok)) throw new Error("Sina news unavailable");
   const payloads = await Promise.all(responses.map((response) => response.json() as Promise<{ result?: { data?: { feed?: { list?: SinaFeed[] } } } }>));
   const rows = payloads.flatMap((payload) => payload.result?.data?.feed?.list ?? []).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index);
-  const relevant = /A股|沪深|股票|个股|涨停|跌停|股价|收盘|板块|上市|回购|业绩|证券|ETF|成交额|市值/;
   return rows.map((row, index) => {
     const title = cleanText(row.rich_text ?? "").replace(/^【([^】]+)】\s*/, "$1：");
     const tags = row.tag?.map((tag) => tag.name ?? "") ?? [];
@@ -147,9 +162,53 @@ async function fetchHotNews(tradeDate: string) {
     const published = row.create_time ? `${row.create_time.replace(" ", "T")}+08:00` : new Date().toISOString();
     const sameDay = row.create_time?.startsWith(tradeDate) ?? false;
     const engagement = number(row.like_nums) + (row.comment_list?.list?.length ?? 0);
-    const heat = Math.min(99, 42 + (tags.includes("A股") ? 20 : 0) + (tags.includes("焦点") ? 14 : 0) + (tags.includes("公司") ? 8 : 0) + (sameDay ? 10 : 0) + (relevant.test(title) ? 8 : 0) + Math.min(7, engagement));
-    return { id: String(row.id ?? index), title, source: "新浪财经", category: newsCategory(row.tag, title), url, publishedAt: new Date(published).toISOString(), heat, relevant: relevant.test(title) || tags.includes("A股") || tags.includes("公司") };
-  }).filter((item) => item.title && item.relevant).sort((a, b) => b.heat - a.heat || b.publishedAt.localeCompare(a.publishedAt)).slice(0, 12).map(({ relevant: _relevant, ...item }) => item);
+    const heat = Math.min(99, 45 + (tags.includes("A股") ? 18 : 0) + (tags.includes("焦点") ? 14 : 0) + (tags.includes("公司") ? 8 : 0) + (sameDay ? 8 : 0) + (marketRelevant.test(title) ? 7 : 0) + Math.min(7, engagement));
+    return { id: `sina-${row.id ?? index}`, title, source: "新浪财经", category: newsCategory(row.tag, title), url, publishedAt: new Date(published).toISOString(), heat, relevant: marketRelevant.test(title) || tags.includes("A股") || tags.includes("公司") };
+  }).filter((item) => item.title && item.relevant).sort((a, b) => b.heat - a.heat || b.publishedAt.localeCompare(a.publishedAt)).map(({ relevant: _relevant, ...item }) => item);
+}
+
+async function fetchClsNews(tradeDate: string): Promise<NewsItem[]> {
+  const lastTime = Math.floor(Date.now() / 1000);
+  const response = await fetch(`https://www.cls.cn/api/cache?name=telegraph&rn=60&lastTime=${lastTime}`, { headers: { ...REQUEST_HEADERS, Referer: "https://www.cls.cn/telegraph" } });
+  if (!response.ok) throw new Error("CLS news unavailable");
+  const payload = await response.json() as { errno?: number; data?: { roll_data?: ClsFeed[] } };
+  return (payload.data?.roll_data ?? []).flatMap((row, index) => {
+    const title = cleanText(row.title || row.brief || row.content || "");
+    const subjects = row.subjects?.map((subject) => subject.subject_name ?? "") ?? [];
+    const related = marketRelevant.test(title) || (row.stock_list?.length ?? 0) > 0 || subjects.some((name) => /A股|公司|证券|板块|科技|消费|金融/.test(name));
+    if (!title || !related) return [];
+    const publishedAt = new Date(number(row.ctime) * 1000).toISOString();
+    const sameDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date(publishedAt)) === tradeDate;
+    const heat = Math.min(99, 47 + (row.level === "A" ? 18 : row.level === "B" ? 10 : 4) + (sameDay ? 8 : 0) + Math.min(16, Math.log10(Math.max(10, number(row.reading_num))) * 4) + Math.min(6, number(row.share_num)));
+    return [{ id: `cls-${row.id ?? index}`, title, source: "财联社", category: newsCategory([], title), url: `https://www.cls.cn/detail/${row.id}`, publishedAt, heat: Math.round(heat) }];
+  });
+}
+
+async function fetchThsNews(tradeDate: string): Promise<NewsItem[]> {
+  const response = await fetch("https://news.10jqka.com.cn/tapp/news/push/stock/?page=1&tag=&track=website&pagesize=60", { headers: { ...REQUEST_HEADERS, Referer: "https://news.10jqka.com.cn/" } });
+  if (!response.ok) throw new Error("THS news unavailable");
+  const payload = await response.json() as { data?: { list?: ThsFeed[] } };
+  return (payload.data?.list ?? []).flatMap((row, index) => {
+    const title = cleanText(row.title || row.digest || "");
+    const tags = row.tags?.map((tag) => tag.name ?? "") ?? [];
+    const related = marketRelevant.test(title) || tags.includes("A股") || /A股/.test(row.tag ?? "");
+    if (!title || !related) return [];
+    const publishedAt = new Date(number(row.ctime) * 1000).toISOString();
+    const sameDay = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date(publishedAt)) === tradeDate;
+    const heat = Math.min(96, 48 + (tags.includes("A股") ? 20 : 0) + (sameDay ? 9 : 0) + (marketRelevant.test(title) ? 8 : 0));
+    return [{ id: `ths-${row.id ?? row.seq ?? index}`, title, source: "同花顺", category: newsCategory([], title), url: String(row.url ?? "https://news.10jqka.com.cn/"), publishedAt, heat }];
+  });
+}
+
+async function fetchHotNews(tradeDate: string) {
+  const results = await Promise.allSettled([fetchClsNews(tradeDate), fetchSinaNews(tradeDate), fetchThsNews(tradeDate)]);
+  const candidates = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  const unique = candidates.filter((item, index, all) => all.findIndex((candidate) => candidate.title.slice(0, 36) === item.title.slice(0, 36)) === index)
+    .sort((a, b) => b.heat - a.heat || b.publishedAt.localeCompare(a.publishedAt));
+  const selected: NewsItem[] = [];
+  for (const source of ["财联社", "新浪财经", "同花顺"]) selected.push(...unique.filter((item) => item.source === source).slice(0, 9));
+  for (const item of unique) if (selected.length < 30 && !selected.some((chosen) => chosen.id === item.id)) selected.push(item);
+  return selected.sort((a, b) => b.heat - a.heat || b.publishedAt.localeCompare(a.publishedAt)).slice(0, 30);
 }
 
 function bandScore(value: number, min: number, max: number, idealMin: number, idealMax: number, weight: number) {
@@ -160,31 +219,36 @@ function bandScore(value: number, min: number, max: number, idealMin: number, id
 }
 
 function recommendations(universe: StockQuote[]): Recommendation[] {
-  return universe
-    .filter((stock) => !/^(N|C|\*?ST|退)/i.test(stock.name) && stock.price >= 3 && stock.change > 0.8 && stock.change < 9.6 && stock.turnoverRate > 0.8 && stock.turnoverRate < 20 && stock.volumeRatio > 1.05 && stock.volumeRatio < 5 && stock.pe > 0 && stock.pe < 100 && stock.marketCap > 3e9 && stock.turnover > 3e8)
-    .map((stock) => {
-      const score = Math.round(
-        bandScore(stock.change, .8, 9.6, 2, 6.5, 24) +
-        bandScore(stock.volumeRatio, 1.05, 5, 1.3, 2.8, 20) +
-        bandScore(stock.turnoverRate, .8, 20, 2, 10, 16) +
-        bandScore(stock.pe, 1, 100, 8, 45, 15) +
-        bandScore(Math.log10(stock.turnover), 8.4, 11, 9, 10.4, 15) +
-        bandScore(Math.log10(stock.marketCap), 9.4, 13, 10, 12, 10)
-      );
-      const reasons = [
-        `收盘涨幅 ${stock.change.toFixed(2)}%，保持强势但未触及极端区间`,
-        `量比 ${stock.volumeRatio.toFixed(2)}、换手率 ${stock.turnoverRate.toFixed(2)}%，成交活跃`,
-        `成交额 ${(stock.turnover / 1e8).toFixed(1)} 亿，具备较好的流动性`,
-      ];
-      if (stock.pe > 0 && stock.pe <= 45) reasons.push(`市盈率 ${stock.pe.toFixed(1)}，位于规则设定的估值区间`);
-      const risks = [stock.change > 6.5 ? "短线涨幅偏高" : "次日动能可能衰减"];
-      if (stock.turnoverRate > 12) risks.push("换手率偏高");
-      if (stock.pe > 55) risks.push("估值敏感度较高");
-      const style = stock.change >= 4 && stock.volumeRatio >= 1.5 ? "放量强势" : stock.volumeRatio >= 2 ? "量能突破" : "稳健活跃";
-      return { ...stock, score, style, reasons, risks };
-    })
-    .sort((a, b) => b.score - a.score || b.turnover - a.turnover)
-    .slice(0, 5);
+  const eligible = universe.filter((stock) => !/^(N|C|\*?ST|退)/i.test(stock.name) && stock.price >= 3 && stock.change > .3 && stock.change < 9.6 && stock.turnoverRate > .5 && stock.turnoverRate < 22 && stock.volumeRatio > 1 && stock.volumeRatio < 6 && stock.pe > 0 && stock.pe < 120 && stock.marketCap > 3e9 && stock.turnover > 2e8);
+  const coreScore = (stock: StockQuote) =>
+    bandScore(stock.change, .3, 9.6, 1.5, 6.5, 24) +
+    bandScore(stock.volumeRatio, 1, 6, 1.25, 3, 20) +
+    bandScore(stock.turnoverRate, .5, 22, 2, 12, 16) +
+    bandScore(stock.pe, 1, 120, 8, 45, 14) +
+    bandScore(Math.log10(stock.turnover), 8.3, 11.2, 9, 10.5, 16) +
+    bandScore(Math.log10(stock.marketCap), 9.4, 13, 10, 12, 10);
+  const strategies: Array<{ name: string; test: (stock: StockQuote) => boolean; bonus: (stock: StockQuote) => number; rationale: (stock: StockQuote) => string }> = [
+    { name: "放量突破", test: (stock) => stock.volumeRatio >= 1.5 && stock.change >= 2 && stock.change <= 9, bonus: (stock) => stock.volumeRatio * 4 + stock.change, rationale: (stock) => `量比 ${stock.volumeRatio.toFixed(2)}，价格与量能同步向上` },
+    { name: "低估值强势", test: (stock) => stock.pe <= 30 && stock.change >= .5 && stock.change <= 6, bonus: (stock) => 30 - stock.pe + stock.change * 2, rationale: (stock) => `市盈率 ${stock.pe.toFixed(1)}，兼顾估值与当日强度` },
+    { name: "趋势延续", test: (stock) => stock.change >= 1 && stock.change <= 4.5 && stock.volumeRatio >= 1.05 && stock.volumeRatio <= 2.8 && stock.marketCap >= 8e9, bonus: (stock) => stock.change * 3 + Math.log10(stock.marketCap), rationale: (stock) => `涨幅 ${stock.change.toFixed(2)}%，处于温和趋势区间` },
+    { name: "高换手博弈", test: (stock) => stock.turnoverRate >= 6 && stock.turnoverRate <= 18 && stock.change >= 1 && stock.change <= 8, bonus: (stock) => stock.turnoverRate + stock.volumeRatio * 2, rationale: (stock) => `换手率 ${stock.turnoverRate.toFixed(2)}%，筹码交换充分` },
+    { name: "资金关注", test: (stock) => stock.turnover >= 1.5e9 && stock.change >= .5 && stock.change <= 7 && stock.marketCap >= 1e10, bonus: (stock) => Math.log10(stock.turnover) * 4 + stock.change, rationale: (stock) => `成交额 ${(stock.turnover / 1e8).toFixed(1)} 亿，资金参与度较高` },
+    { name: "中小盘弹性", test: (stock) => stock.marketCap >= 3e9 && stock.marketCap <= 3e10 && stock.change >= 1 && stock.change <= 7 && stock.volumeRatio >= 1.2, bonus: (stock) => stock.change * 2 + stock.volumeRatio * 3 - Math.log10(stock.marketCap), rationale: (stock) => `总市值 ${(stock.marketCap / 1e8).toFixed(0)} 亿，具备相对弹性` },
+  ];
+  const used = new Set<string>();
+  const picks: Recommendation[] = [];
+  for (const strategy of strategies) {
+    const stock = eligible.filter((item) => !used.has(item.secid) && strategy.test(item)).sort((a, b) => coreScore(b) + strategy.bonus(b) - coreScore(a) - strategy.bonus(a) || b.turnover - a.turnover)[0];
+    if (!stock) continue;
+    used.add(stock.secid);
+    const score = Math.min(99, Math.max(65, Math.round(coreScore(stock) + strategy.bonus(stock) * .35)));
+    const reasons = [strategy.rationale(stock), `量比 ${stock.volumeRatio.toFixed(2)}、换手率 ${stock.turnoverRate.toFixed(2)}%`, `成交额 ${(stock.turnover / 1e8).toFixed(1)} 亿，流动性满足规则门槛`];
+    const risks = [stock.change > 6.5 ? "短线涨幅偏高" : "次日动能可能衰减"];
+    if (stock.turnoverRate > 12) risks.push("换手率偏高");
+    if (stock.pe > 55) risks.push("估值敏感度较高");
+    picks.push({ ...stock, score, style: strategy.name, reasons, risks });
+  }
+  return picks;
 }
 
 function chinaClock() {
@@ -219,12 +283,14 @@ async function ensureTable() {
 async function buildSnapshot(probe?: Awaited<ReturnType<typeof fetchIndices>>, status: "final" | "provisional" = "final"): Promise<DailySnapshot> {
   const market = probe ?? await fetchIndices();
   const [universe, sectorRows, totalStocks, news] = await Promise.all([
-    fetchUniverse(), ranking("changepercent", 0, 8, "hs_s"),
+    fetchUniverse(), ranking("changepercent", 0, 100, "hs_s"),
     sinaJson<string>(`${SINA_API}.getHQNodeStockCount?node=hs_a`), fetchHotNews(market.tradeDate),
   ]);
-  const sectors = sectorRows.map((row) => ({ name: String(row.name ?? "—"), code: String(row.code ?? ""), price: number(row.trade), change: number(row.changepercent) }));
+  const sectorQuotes = sectorRows.map((row) => ({ name: String(row.name ?? "—"), code: String(row.code ?? ""), price: number(row.trade), change: number(row.changepercent), turnover: number(row.amount) }));
+  const sectors = [...sectorQuotes.slice(0, 8), ...sectorQuotes.slice(-4).reverse()];
   const averageIndexChange = market.indices.reduce((sum, item) => sum + item.change, 0) / Math.max(market.indices.length, 1);
   return {
+    contentVersion: 3,
     tradeDate: market.tradeDate, generatedAt: new Date().toISOString(), nextRefreshAt: nextRefreshAt(), status,
     indices: market.indices, sectors, totalStocks: number(totalStocks), universe,
     recommendations: recommendations(universe), news,
@@ -238,14 +304,15 @@ export async function GET() {
     const db = await ensureTable();
     const latest = await db.prepare("SELECT trade_date AS tradeDate, payload FROM daily_snapshots ORDER BY trade_date DESC LIMIT 1").first<{ tradeDate: string; payload: string }>();
     const clock = chinaClock();
-    if (latest && !clock.afterClose) {
-      const payload = JSON.parse(latest.payload) as DailySnapshot;
+    const stored = latest ? JSON.parse(latest.payload) as DailySnapshot : null;
+    if (latest && stored?.contentVersion === 3 && !clock.afterClose) {
+      const payload = stored;
       return Response.json({ ...payload, nextRefreshAt: refreshAt }, { headers: { "Cache-Control": "public, max-age=300, s-maxage=300" } });
     }
 
     const probe = await fetchIndices();
-    if (latest?.tradeDate === probe.tradeDate) {
-      const payload = JSON.parse(latest.payload) as DailySnapshot;
+    if (latest?.tradeDate === probe.tradeDate && stored?.contentVersion === 3) {
+      const payload = stored;
       return Response.json({ ...payload, nextRefreshAt: refreshAt }, { headers: { "Cache-Control": "public, max-age=300, s-maxage=300" } });
     }
 
