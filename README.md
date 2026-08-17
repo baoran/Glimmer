@@ -1,4 +1,29 @@
-# vinext-starter
+# 微光｜A股收盘研究台
+
+微光聚合 A 股核心指数、行业板块、沪深北全部个股、热门财经资讯和六种规则战法选股结果。
+
+## 两种部署
+
+- `app/`：运行在 OpenAI Sites 上的动态版本，包含 D1 历史快照。
+- `github-pages/`：可直接发布到 GitHub Pages 的静态版本，使用相对路径，兼容用户主页和项目主页。
+
+## GitHub 自动更新
+
+`.github/workflows/update-pages.yml` 会在北京时间每天 16:10 自动运行：
+
+1. 从新浪财经、腾讯行情、财联社和同花顺公开接口抓取收盘数据与热门资讯。
+2. 更新 `github-pages/data/` 内的当日数据、30 日资讯归档和每日个股快照。
+3. 自动提交数据变更，并通过 GitHub Pages Actions 发布 `github-pages/`。
+
+也可以在 GitHub 的 Actions 页面手动运行，或在本地执行：
+
+```bash
+npm run pages:update
+```
+
+选股建议仅供数据研究，不构成投资建议。
+
+## Sites 开发
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
