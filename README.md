@@ -1,125 +1,48 @@
-# 微光｜A股收盘研究台
+# Glimmer
 
-微光聚合 A 股核心指数、行业板块、沪深北全部个股、热门财经资讯和六种规则战法选股结果。
+Glimmer is an A-share market intelligence dashboard that brings together major market indices, sector performance, stock-level data, financial news, historical snapshots, and rule-based stock screening.
 
-## 两种部署
+## Features
 
-- `app/`：运行在 OpenAI Sites 上的动态版本，包含 D1 历史快照。
-- `github-pages/`：可直接发布到 GitHub Pages 的静态版本，使用相对路径，兼容用户主页和项目主页。
+- Market overview for major A-share indices and sectors
+- Searchable and filterable coverage of Shanghai, Shenzhen, Beijing, and STAR Market stocks
+- Daily financial news from multiple public sources
+- Historical news and stock snapshots
+- Rule-based stock suggestions across several trading strategies
+- Light and dark display modes
 
-## GitHub 自动更新
+## Project Structure
 
-`.github/workflows/update-pages.yml` 会在北京时间每天 16:10 自动运行：
+- `app/` contains the dynamic Sites application.
+- `github-pages/` contains the static GitHub Pages build.
+- `scripts/` contains data-refresh and publishing utilities.
+- `.github/workflows/update-pages.yml` runs the scheduled daily update.
 
-1. 从新浪财经、腾讯行情、财联社和同花顺公开接口抓取收盘数据与热门资讯。
-2. 更新 `github-pages/data/` 内的当日数据、30 日资讯归档和每日个股快照。
-3. 自动提交数据变更，并通过 GitHub Pages Actions 发布 `github-pages/`。
+## Daily Updates
 
-也可以在 GitHub 的 Actions 页面手动运行，或在本地执行：
+The GitHub Actions workflow runs at 16:10 China Standard Time on trading days. It refreshes the latest market data, news archive, stock snapshots, and rule-based suggestions, then publishes the updated static site.
+
+The update can also be triggered manually from GitHub Actions or locally:
 
 ```bash
 npm run pages:update
 ```
 
-选股建议仅供数据研究，不构成投资建议。
+## Local Development
 
-## Sites 开发
-
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
-
-## Prerequisites
-
-- Node.js `>=22.13.0`
-
-## Quick Start
+Prerequisite: Node.js `>=22.13.0`.
 
 ```bash
 npm install
 npm run dev
+```
+
+Create a production build with:
+
+```bash
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Disclaimer
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+All market data and strategy results are provided for research and informational purposes only. Nothing in this project constitutes investment advice.
