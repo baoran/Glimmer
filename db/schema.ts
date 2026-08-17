@@ -1,4 +1,12 @@
-// Intentionally empty by default.
-// Add Drizzle tables here when the site actually needs a database.
-// See examples/d1/db/schema.ts for an opt-in example.
-export {};
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+export const dailySnapshots = sqliteTable(
+  "daily_snapshots",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    tradeDate: text("trade_date").notNull(),
+    payload: text("payload").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("idx_daily_snapshots_trade_date").on(table.tradeDate)],
+);

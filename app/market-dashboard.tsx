@@ -3,69 +3,93 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type IndexQuote = { name: string; code: string; secid: string; price: number; change: number; changeAmount: number; high: number; low: number; open: number; previousClose: number; volume: number };
-type StockQuote = { name: string; code: string; secid: string; price: number; change: number; changeAmount: number; volume?: number; turnover?: number; turnoverRate?: number; pe?: number; high?: number; low?: number; marketCap?: number; netFlow?: number };
-type Sector = { name: string; code: string; price: number; change: number; netFlow: number };
-type NewsItem = { id: string; title: string; source: string; category: string; url: string; publishedAt: string };
-type MarketData = { indices: IndexQuote[]; leaders: StockQuote[]; laggards: StockQuote[]; sectors: Sector[]; totalStocks: number; updatedAt: string; stale: boolean };
-
-const initialMarket: MarketData = {
-  indices: [
-    { name: "上证指数", code: "000001", secid: "1.000001", price: 3982.65, change: 1.41, changeAmount: 55.47, high: 3983.51, low: 3924.47, open: 3930.1, previousClose: 3927.18, volume: 706246394459 },
-    { name: "深证成指", code: "399001", secid: "0.399001", price: 14704.27, change: 2.44, changeAmount: 349.96, high: 14704.55, low: 14348.47, open: 14399.2, previousClose: 14354.31, volume: 465109058625 },
-    { name: "创业板指", code: "399006", secid: "0.399006", price: 3246.8, change: 3.07, changeAmount: 96.66, high: 3249.2, low: 3138.5, open: 3155.1, previousClose: 3150.14, volume: 208700000000 },
-  ],
-  leaders: [], laggards: [], sectors: [], totalStocks: 0, updatedAt: new Date().toISOString(), stale: true,
+type StockQuote = { name: string; code: string; secid: string; price: number; change: number; changeAmount: number; volume: number; turnover: number; turnoverRate: number; volumeRatio: number; pe: number; high: number; low: number; open: number; previousClose: number; marketCap: number; floatMarketCap: number };
+type Recommendation = StockQuote & { score: number; style: string; reasons: string[]; risks: string[] };
+type NewsItem = { id: string; title: string; source: string; category: string; url: string; publishedAt: string; heat: number };
+type DailySnapshot = {
+  tradeDate: string; generatedAt: string; nextRefreshAt: string; status: "final" | "provisional";
+  indices: IndexQuote[]; sectors: Array<{ name: string; code: string; price: number; change: number }>;
+  totalStocks: number; universe: StockQuote[]; recommendations: Recommendation[]; news: NewsItem[];
+  summary: { averageIndexChange: number; positiveIndices: number; topSector: string; sampleSize: number };
 };
 
-const newsFilters = ["全部", "市场", "公司", "政策", "行业"];
+type SortKey = "change" | "turnoverRate" | "volumeRatio" | "pe" | "price" | "marketCap" | "turnover";
+type FilterKey = Exclude<SortKey, "turnover">;
+type Range = { min: string; max: string };
+
+const placeholderIndices: IndexQuote[] = [
+  { name: "上证指数", code: "000001", secid: "sh000001", price: 3982.65, change: 1.41, changeAmount: 55.47, high: 3983.51, low: 3924.47, open: 3930.1, previousClose: 3927.18, volume: 706246394459 },
+  { name: "深证成指", code: "399001", secid: "sz399001", price: 14704.27, change: 2.44, changeAmount: 349.96, high: 14704.55, low: 14348.47, open: 14399.2, previousClose: 14354.31, volume: 465109058625 },
+  { name: "创业板指", code: "399006", secid: "sz399006", price: 3246.8, change: 3.07, changeAmount: 96.66, high: 3249.2, low: 3138.5, open: 3155.1, previousClose: 3150.14, volume: 208700000000 },
+  { name: "沪深300", code: "000300", secid: "sh000300", price: 4588.23, change: 1.73, changeAmount: 78.1, high: 4591.2, low: 4512.1, open: 4520.2, previousClose: 4510.1, volume: 192000000000 },
+  { name: "科创50", code: "000688", secid: "sh000688", price: 1324.18, change: 2.86, changeAmount: 36.8, high: 1328.3, low: 1280.5, open: 1288.6, previousClose: 1287.38, volume: 88000000000 },
+];
+
+const initialSnapshot: DailySnapshot = {
+  tradeDate: "2026-08-17", generatedAt: new Date().toISOString(), nextRefreshAt: new Date(Date.now() + 86400000).toISOString(), status: "provisional",
+  indices: placeholderIndices, sectors: [], totalStocks: 0, universe: [], recommendations: [], news: [],
+  summary: { averageIndexChange: 0, positiveIndices: 0, topSector: "—", sampleSize: 0 },
+};
+
+const sortOptions: Array<{ key: SortKey; label: string }> = [
+  { key: "change", label: "涨幅" }, { key: "turnoverRate", label: "换手率" }, { key: "volumeRatio", label: "量比" },
+  { key: "pe", label: "市盈率" }, { key: "price", label: "价格" }, { key: "marketCap", label: "总市值" }, { key: "turnover", label: "成交额" },
+];
+
+const filterFields: Array<{ key: FilterKey; label: string; unit: string; step: string }> = [
+  { key: "change", label: "涨幅", unit: "%", step: "0.1" },
+  { key: "turnoverRate", label: "换手率", unit: "%", step: "0.1" },
+  { key: "volumeRatio", label: "量比", unit: "倍", step: "0.1" },
+  { key: "pe", label: "市盈率", unit: "x", step: "1" },
+  { key: "price", label: "价格", unit: "元", step: "0.1" },
+  { key: "marketCap", label: "总市值", unit: "亿", step: "1" },
+];
+
+const emptyFilters = (): Record<FilterKey, Range> => ({
+  change: { min: "", max: "" }, turnoverRate: { min: "", max: "" }, volumeRatio: { min: "", max: "" },
+  pe: { min: "", max: "" }, price: { min: "", max: "" }, marketCap: { min: "", max: "" },
+});
 
 function signed(value: number, digits = 2) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${value.toFixed(digits)}`;
+  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 }
 
 function compact(value: number) {
   const absolute = Math.abs(value);
-  const prefix = value < 0 ? "-" : "";
-  if (absolute >= 1e12) return `${prefix}${(absolute / 1e12).toFixed(2)}万亿`;
-  if (absolute >= 1e8) return `${prefix}${(absolute / 1e8).toFixed(1)}亿`;
-  if (absolute >= 1e4) return `${prefix}${(absolute / 1e4).toFixed(1)}万`;
+  const sign = value < 0 ? "-" : "";
+  if (absolute >= 1e12) return `${sign}${(absolute / 1e12).toFixed(2)}万亿`;
+  if (absolute >= 1e8) return `${sign}${(absolute / 1e8).toFixed(1)}亿`;
+  if (absolute >= 1e4) return `${sign}${(absolute / 1e4).toFixed(1)}万`;
   return `${value.toFixed(0)}`;
 }
 
-function timeLabel(iso: string) {
-  const date = new Date(iso);
-  const now = new Date();
-  const diffMinutes = Math.max(0, Math.round((now.getTime() - date.getTime()) / 60000));
-  if (diffMinutes < 1) return "刚刚";
-  if (diffMinutes < 60) return `${diffMinutes}分钟前`;
-  if (diffMinutes < 1440) return `${Math.floor(diffMinutes / 60)}小时前`;
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+function formatTradeDate(value: string) {
+  const [year, month, day] = value.split("-");
+  return `${year}年${Number(month)}月${Number(day)}日`;
 }
 
-function updateTime(iso: string) {
-  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(iso));
+function clock(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
 
-function marketClock() {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const minute = Number(values.hour) * 60 + Number(values.minute);
-  const weekday = values.weekday;
-  const workday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday);
-  const open = workday && ((minute >= 570 && minute < 690) || (minute >= 780 && minute < 900));
-  const lunch = workday && minute >= 690 && minute < 780;
-  return open ? { label: "沪深交易进行中", className: "is-open" } : lunch ? { label: "午间休市", className: "is-paused" } : { label: "沪深交易已收盘", className: "" };
+function dayAndTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
 
 function bars(seed: string, rising: boolean) {
   let hash = [...seed].reduce((value, char) => value + char.charCodeAt(0), 0);
-  return Array.from({ length: 12 }, (_, index) => {
+  return Array.from({ length: 9 }, (_, index) => {
     hash = (hash * 9301 + 49297) % 233280;
-    const base = 20 + (hash / 233280) * 58;
-    const trend = rising ? index * 2 : (11 - index) * 2;
-    return Math.min(96, Math.round(base + trend));
+    const base = 25 + (hash / 233280) * 45;
+    return Math.min(96, Math.round(base + (rising ? index : 8 - index) * 3));
   });
+}
+
+function normalizeStock(stock: Partial<StockQuote> & Pick<StockQuote, "name" | "code" | "secid" | "price" | "change" | "changeAmount">): StockQuote {
+  return {
+    volume: 0, turnover: 0, turnoverRate: 0, volumeRatio: 0, pe: 0, high: 0, low: 0,
+    open: 0, previousClose: 0, marketCap: 0, floatMarketCap: 0, ...stock,
+  };
 }
 
 function Tone({ value, children }: { value: number; children: React.ReactNode }) {
@@ -73,83 +97,57 @@ function Tone({ value, children }: { value: number; children: React.ReactNode })
 }
 
 export function MarketDashboard() {
-  const [market, setMarket] = useState(initialMarket);
-  const [news, setNews] = useState<NewsItem[]>([]);
+  const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [rankTab, setRankTab] = useState<"leaders" | "laggards" | "watchlist">("leaders");
-  const [newsFilter, setNewsFilter] = useState("全部");
+  const [sortKey, setSortKey] = useState<SortKey>("change");
+  const [descending, setDescending] = useState(true);
+  const [filters, setFilters] = useState<Record<FilterKey, Range>>(emptyFilters);
+  const [listMode, setListMode] = useState<"market" | "watchlist">("market");
+  const [watchlist, setWatchlist] = useState<StockQuote[]>([]);
+  const [watchReady, setWatchReady] = useState(false);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<StockQuote[]>([]);
   const [searching, setSearching] = useState(false);
-  const [watchlist, setWatchlist] = useState<StockQuote[]>([]);
-  const [watchlistReady, setWatchlistReady] = useState(false);
-  const [selected, setSelected] = useState<StockQuote | null>(null);
   const searchWrap = useRef<HTMLDivElement>(null);
-  const clock = marketClock();
 
-  const loadMarket = useCallback(async (manual = false) => {
+  const loadDaily = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
     try {
-      const response = await fetch("/api/market", { cache: "no-store" });
-      if (response.ok) setMarket(await response.json() as MarketData);
+      const response = await fetch("/api/daily", { cache: "no-store" });
+      if (!response.ok) throw new Error("Daily snapshot unavailable");
+      setSnapshot(await response.json() as DailySnapshot);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  const loadNews = useCallback(async () => {
-    try {
-      const response = await fetch("/api/news", { cache: "no-store" });
-      if (response.ok) {
-        const payload = await response.json() as { items: NewsItem[] };
-        setNews(payload.items);
-      }
-    } catch {
-      setNews([]);
-    }
-  }, []);
+  useEffect(() => { void loadDaily(); }, [loadDaily]);
 
   useEffect(() => {
-    void loadMarket();
-    void loadNews();
-    const marketTimer = window.setInterval(() => void loadMarket(), 180000);
-    const newsTimer = window.setInterval(() => void loadNews(), 900000);
-    return () => { window.clearInterval(marketTimer); window.clearInterval(newsTimer); };
-  }, [loadMarket, loadNews]);
+    const delay = Math.max(60000, new Date(snapshot.nextRefreshAt).getTime() - Date.now() + 120000);
+    const timer = window.setTimeout(() => void loadDaily(), Math.min(delay, 2147483000));
+    return () => window.clearTimeout(timer);
+  }, [snapshot.nextRefreshAt, loadDaily]);
 
   useEffect(() => {
     try {
-      const stored = window.localStorage.getItem("panmian-watchlist");
-      if (stored) setWatchlist(JSON.parse(stored) as StockQuote[]);
-    } catch { /* Device storage may be unavailable. */ }
-    setWatchlistReady(true);
+      const saved = window.localStorage.getItem("panmian-watchlist");
+      if (saved) setWatchlist(JSON.parse(saved) as StockQuote[]);
+    } catch { /* Device-local storage is optional. */ }
+    setWatchReady(true);
   }, []);
 
   useEffect(() => {
-    if (!watchlistReady) return;
+    if (!watchReady) return;
     window.localStorage.setItem("panmian-watchlist", JSON.stringify(watchlist));
-  }, [watchlist, watchlistReady]);
+  }, [watchlist, watchReady]);
 
   useEffect(() => {
-    if (!watchlistReady || !watchlist.length) return;
-    const secids = watchlist.map((item) => item.secid).join(",");
-    const refresh = async () => {
-      const response = await fetch(`/api/quotes?secids=${encodeURIComponent(secids)}`, { cache: "no-store" });
-      if (!response.ok) return;
-      const payload = await response.json() as { items: StockQuote[] };
-      if (payload.items.length) {
-        setWatchlist((current) => payload.items.map((quote) => {
-          const saved = current.find((item) => item.secid === quote.secid);
-          return { ...saved, ...quote, name: saved?.name ?? quote.name };
-        }));
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 180000);
-    return () => window.clearInterval(timer);
-  }, [watchlistReady, watchlist.map((item) => item.secid).join(",")]);
+    if (!snapshot.universe.length || !watchlist.length) return;
+    setWatchlist((items) => items.map((item) => snapshot.universe.find((quote) => quote.secid === item.secid) ?? item));
+  }, [snapshot.tradeDate]);
 
   useEffect(() => {
     const term = query.trim();
@@ -159,190 +157,134 @@ export function MarketDashboard() {
       setSearching(true);
       try {
         const response = await fetch(`/api/search?q=${encodeURIComponent(term)}`, { signal: controller.signal });
-        const payload = await response.json() as { items: StockQuote[] };
-        setSearchResults(payload.items);
-      } catch {
-        if (!controller.signal.aborted) setSearchResults([]);
-      } finally {
-        if (!controller.signal.aborted) setSearching(false);
-      }
+        const payload = await response.json() as { items: Array<Partial<StockQuote> & Pick<StockQuote, "name" | "code" | "secid" | "price" | "change" | "changeAmount">> };
+        setSearchResults(payload.items.map(normalizeStock));
+      } catch { if (!controller.signal.aborted) setSearchResults([]); }
+      finally { if (!controller.signal.aborted) setSearching(false); }
     }, 260);
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [query]);
 
   useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!searchWrap.current?.contains(event.target as Node)) setQuery("");
-    };
+    const close = (event: MouseEvent) => { if (!searchWrap.current?.contains(event.target as Node)) setQuery(""); };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
   const isWatched = useCallback((secid: string) => watchlist.some((item) => item.secid === secid), [watchlist]);
-  const toggleWatch = useCallback((quote: StockQuote) => {
-    setWatchlist((items) => items.some((item) => item.secid === quote.secid) ? items.filter((item) => item.secid !== quote.secid) : [...items, quote]);
+  const toggleWatch = useCallback((stock: StockQuote) => {
+    setWatchlist((items) => items.some((item) => item.secid === stock.secid) ? items.filter((item) => item.secid !== stock.secid) : [...items, stock]);
   }, []);
 
-  const rows = rankTab === "leaders" ? market.leaders : rankTab === "laggards" ? market.laggards : watchlist;
-  const filteredNews = useMemo(() => newsFilter === "全部" ? news : news.filter((item) => item.category === newsFilter), [news, newsFilter]);
-  const leadStock = market.leaders[0];
-  const primaryIndices = market.indices.slice(0, 3);
+  const activeFilterCount = useMemo(() => Object.values(filters).filter((range) => range.min !== "" || range.max !== "").length, [filters]);
+
+  const rankingRows = useMemo(() => {
+    const source = listMode === "market" ? snapshot.universe : watchlist;
+    const metricValue = (stock: StockQuote, key: SortKey) => stock[key];
+    return source.filter((stock) => filterFields.every(({ key }) => {
+      const raw = key === "marketCap" ? stock.marketCap / 1e8 : stock[key];
+      const minimum = filters[key].min === "" ? -Infinity : Number(filters[key].min);
+      const maximum = filters[key].max === "" ? Infinity : Number(filters[key].max);
+      return raw >= minimum && raw <= maximum;
+    })).sort((a, b) => (metricValue(a, sortKey) - metricValue(b, sortKey)) * (descending ? -1 : 1));
+  }, [snapshot.universe, watchlist, listMode, filters, sortKey, descending]);
+
+  const updateFilter = (key: FilterKey, side: keyof Range, value: string) => setFilters((current) => ({ ...current, [key]: { ...current[key], [side]: value } }));
+  const preset = (name: "active" | "value" | "midcap") => {
+    const next = emptyFilters();
+    if (name === "active") { next.change.min = "1"; next.turnoverRate.min = "3"; next.volumeRatio.min = "1.2"; }
+    if (name === "value") { next.pe.min = "1"; next.pe.max = "30"; next.marketCap.min = "100"; }
+    if (name === "midcap") { next.marketCap.min = "30"; next.marketCap.max = "300"; next.price.min = "5"; }
+    setFilters(next);
+  };
 
   return (
     <main className="site-shell" id="top">
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="盘面首页">
-          <span className="brand-mark">盘</span><span>盘面</span><span className="brand-tag">A股市场雷达</span>
-        </a>
-        <nav className="nav" aria-label="主导航">
-          <a className="active" href="#market">行情</a><a href="#rankings">榜单</a><a href="#news">快讯</a>
-        </nav>
+        <a className="brand" href="#top" aria-label="盘面首页"><span className="brand-mark">盘</span><span>盘面</span><span className="brand-tag">A股收盘研究台</span></a>
+        <nav className="nav" aria-label="主导航"><a href="#market">总览</a><a href="#ideas">明日建议</a><a href="#rankings">筛选榜单</a><a href="#news">每日热讯</a></nav>
         <div className="stock-search" ref={searchWrap}>
-          <label className="sr-only" htmlFor="stock-search">搜索股票</label>
-          <span aria-hidden="true">⌕</span>
-          <input id="stock-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="代码 / 名称" autoComplete="off" />
-          {query && (
-            <div className="search-popover" role="listbox" aria-label="股票搜索结果">
-              {searching ? <p className="search-state">正在查找…</p> : searchResults.length ? searchResults.map((item) => (
-                <button type="button" key={item.secid} onClick={() => { setSelected(item); setQuery(""); }}>
-                  <span><b>{item.name}</b><small>{item.code}</small></span>
-                  <span className="search-price">{item.price.toFixed(2)}<Tone value={item.change}>{signed(item.change)}%</Tone></span>
-                </button>
-              )) : <p className="search-state">没有找到沪深 A 股</p>}
-            </div>
-          )}
+          <label className="sr-only" htmlFor="stock-search">搜索股票</label><span aria-hidden="true">⌕</span>
+          <input id="stock-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索代码 / 名称" autoComplete="off" />
+          {query && <div className="search-popover" role="listbox" aria-label="股票搜索结果">
+            {searching ? <p>正在搜索…</p> : searchResults.length ? searchResults.map((item) => <button type="button" key={item.secid} onClick={() => { toggleWatch(item); setQuery(""); }}><span><b>{item.name}</b><small>{item.code}</small></span><span>{item.price.toFixed(2)} <Tone value={item.change}>{signed(item.change)}%</Tone></span><i>{isWatched(item.secid) ? "已自选" : "+ 自选"}</i></button>) : <p>没有找到沪深 A 股</p>}
+          </div>}
         </div>
-        <div className={`market-open ${clock.className}`}><span />{clock.label}</div>
+        <div className={snapshot.status === "final" ? "close-status final" : "close-status"}><span />{snapshot.status === "final" ? "收盘定稿" : "盘中预览"}</div>
       </header>
 
-      <section className="hero">
-        <div>
-          <p className="eyebrow">MARKET INTELLIGENCE · {new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit" }).format(new Date()).replace("/", " / ")}</p>
-          <h1>今天的市场，<br /><em>一眼看清。</em></h1>
-          <p className="lede">聚合沪深核心行情、强势板块与重要资讯，<br />让每个交易日从关键信号开始。</p>
-          <div className="freshness" aria-live="polite">
-            <span className={loading ? "loading-dot" : ""} />
-            {market.stale ? "数据源连接中" : `行情更新于 ${updateTime(market.updatedAt)}`}
-            <button type="button" onClick={() => void loadMarket(true)} disabled={refreshing}>{refreshing ? "刷新中" : "刷新"}</button>
-          </div>
+      <div className="daily-strip">
+        <b>{formatTradeDate(snapshot.tradeDate)} · 收盘数据</b>
+        <span>生成 {clock(snapshot.generatedAt)}</span><span>下次定稿 {dayAndTime(snapshot.nextRefreshAt)}</span>
+        <button type="button" onClick={() => void loadDaily(true)} disabled={refreshing}>{refreshing ? "正在检查" : "检查更新"}</button>
+      </div>
+
+      <section className="overview" id="market">
+        <div className="section-title compact-title"><div><p>DAILY MARKET CLOSE</p><h1>收盘总览</h1></div><span>每日 15:35 后更新 · 盘中保留上一交易日定稿</span></div>
+        <div className="summary-grid">
+          <article><span>核心指数红盘</span><b>{snapshot.summary.positiveIndices}<small> / {snapshot.indices.length}</small></b><em>市场广度</em></article>
+          <article><span>指数平均涨跌</span><Tone value={snapshot.summary.averageIndexChange}><b>{signed(snapshot.summary.averageIndexChange)}<small>%</small></b></Tone><em>等权口径</em></article>
+          <article><span>最强行业指数</span><b className="text-value">{snapshot.summary.topSector}</b><em>按收盘涨幅</em></article>
+          <article><span>筛选样本池</span><b>{snapshot.summary.sampleSize}<small> 只</small></b><em>活跃与高关注股票</em></article>
         </div>
-        <div className="hero-stat">
-          <span>{leadStock ? "今日领涨" : "覆盖沪深市场"}</span>
-          <strong>{leadStock ? leadStock.name : market.totalStocks ? market.totalStocks.toLocaleString("zh-CN") : "A 股"}</strong>
-          <small>{leadStock ? `${leadStock.code} · ${signed(leadStock.change)}%` : "指数 · 个股 · 行业 · 资讯"}</small>
-          <div className="breadth" aria-hidden="true"><i /><i /><i /><i /><i /></div>
+        <div className="indices">
+          {snapshot.indices.map((item) => <article className="index-card" key={item.secid}>
+            <div className="index-head"><span>{item.name}<small>{item.code}</small></span><Tone value={item.change}>{signed(item.change)}%</Tone></div>
+            <div className="index-price"><b>{item.price.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}</b><small><Tone value={item.changeAmount}>{signed(item.changeAmount)}</Tone></small></div>
+            <div className={`micro-chart ${item.change < 0 ? "negative" : ""}`} aria-hidden="true">{bars(item.code, item.change >= 0).map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
+            <div className="index-foot"><span>高 {item.high.toFixed(2)}</span><span>低 {item.low.toFixed(2)}</span><span>{compact(item.volume)}</span></div>
+          </article>)}
         </div>
+        <div className="sector-tape"><b>强势行业</b>{snapshot.sectors.map((item, index) => <span key={item.code}><i>{index + 1}</i>{item.name}<Tone value={item.change}>{signed(item.change)}%</Tone></span>)}</div>
       </section>
 
-      <section className="indices" id="market" aria-label="主要指数">
-        {primaryIndices.map((item, index) => (
-          <article className="index-card" key={item.secid}>
-            <div className="index-heading"><span>0{index + 1}</span><b>{item.name}</b><small>{item.code}</small></div>
-            <div className="index-main"><strong>{item.price.toLocaleString("zh-CN", { minimumFractionDigits: 2 })}</strong><Tone value={item.change}><em>{signed(item.change)}%</em></Tone></div>
-            <div className={`micro-chart ${item.change < 0 ? "negative" : ""}`} aria-hidden="true">
-              {bars(item.code, item.change >= 0).map((height, barIndex) => <span key={barIndex} style={{ height: `${height}%` }} />)}
-            </div>
-            <div className="index-meta"><small>高 {item.high.toFixed(2)}</small><small>低 {item.low.toFixed(2)}</small><small>成交 {compact(item.volume)}</small></div>
-          </article>
-        ))}
-      </section>
-
-      <section className="signal-grid">
-        <article className="panel sector-panel">
-          <div className="panel-title"><span>资金温度</span><b>强势板块</b><small>TOP {market.sectors.length || "—"}</small></div>
-          <div className="pulse-list">
-            {market.sectors.length ? market.sectors.slice(0, 5).map((item, index) => (
-              <div className="pulse-row" key={item.code}>
-                <span>0{index + 1}</span><b>{item.name}</b>
-                <div><i style={{ width: `${Math.max(16, Math.min(100, (Math.abs(item.change) / Math.max(...market.sectors.map((sector) => Math.abs(sector.change)))) * 100))}%` }} /></div>
-                <Tone value={item.change}><em>{signed(item.change)}%</em></Tone>
-              </div>
-            )) : <div className="empty-inline">板块数据加载中</div>}
-          </div>
-        </article>
-
-        <article className="panel market-pulse-panel">
-          <div className="panel-title"><span>盘面信号</span><b>核心指数</b><small>{market.indices.length}</small></div>
-          <div className="mini-index-list">
-            {market.indices.slice(3).map((item) => (
-              <div key={item.secid}><span>{item.name}<small>{item.code}</small></span><b>{item.price.toFixed(2)}</b><Tone value={item.change}>{signed(item.change)}%</Tone></div>
-            ))}
-            <div><span>全市场股票<small>沪深 A 股</small></span><b>{market.totalStocks ? market.totalStocks.toLocaleString("zh-CN") : "—"}</b><span className="neutral">只</span></div>
-          </div>
-        </article>
+      <section className="ideas-section" id="ideas">
+        <div className="section-title"><div><p>NEXT SESSION WATCHLIST</p><h2>明日选股建议</h2></div><div className="method-note"><b>六因子量化初筛</b><span>涨幅 · 换手率 · 量比 · 成交额 · 市盈率 · 市值</span></div></div>
+        <div className="idea-disclaimer"><b>观察名单，不是买入指令。</b> 基于 {formatTradeDate(snapshot.tradeDate)} 收盘数据生成；未纳入收盘后公告、隔夜消息、次日跳空等变量，任何信号都可能失效。</div>
+        <div className="idea-grid">
+          {snapshot.recommendations.map((item, index) => <article className="idea-card" key={item.secid}>
+            <div className="idea-rank"><span>0{index + 1}</span><b>{item.score}<small>分</small></b></div>
+            <div className="idea-name"><span><b>{item.name}</b><small>{item.code}</small></span><button type="button" className={isWatched(item.secid) ? "watch active" : "watch"} onClick={() => toggleWatch(item)} aria-label={isWatched(item.secid) ? `移除${item.name}自选` : `添加${item.name}自选`}>{isWatched(item.secid) ? "★" : "☆"}</button></div>
+            <div className="idea-price"><b>{item.price.toFixed(2)}</b><Tone value={item.change}>{signed(item.change)}%</Tone></div>
+            <div className="idea-metrics"><span>换手 <b>{item.turnoverRate.toFixed(2)}%</b></span><span>量比 <b>{item.volumeRatio.toFixed(2)}</b></span><span>PE <b>{item.pe.toFixed(1)}</b></span></div>
+            <span className="style-tag">{item.style}</span>
+            <ul>{item.reasons.slice(0, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            <p><b>主要风险：</b>{item.risks.join("、")}</p>
+          </article>)}
+          {!snapshot.recommendations.length && <div className="empty-state">正在生成收盘观察名单…</div>}
+        </div>
       </section>
 
       <section className="rank-section" id="rankings">
-        <div className="section-heading">
-          <div><p>MARKET MOVERS</p><h2>个股风向</h2></div>
-          <div className="segmented" role="tablist" aria-label="个股榜单">
-            <button role="tab" aria-selected={rankTab === "leaders"} onClick={() => setRankTab("leaders")}>领涨</button>
-            <button role="tab" aria-selected={rankTab === "laggards"} onClick={() => setRankTab("laggards")}>领跌</button>
-            <button role="tab" aria-selected={rankTab === "watchlist"} onClick={() => setRankTab("watchlist")}>自选 <span>{watchlist.length}</span></button>
+        <div className="section-title"><div><p>MARKET SCREENER</p><h2>多指标榜单</h2></div><span className="sample-note">覆盖当日高关注与活跃样本 {snapshot.universe.length} 只</span></div>
+        <div className="screener">
+          <div className="screener-toolbar">
+            <div className="mode-tabs"><button className={listMode === "market" ? "active" : ""} onClick={() => setListMode("market")}>市场样本</button><button className={listMode === "watchlist" ? "active" : ""} onClick={() => setListMode("watchlist")}>我的自选 <span>{watchlist.length}</span></button></div>
+            <label>排序指标<select value={sortKey} onChange={(event) => setSortKey(event.target.value as SortKey)}>{sortOptions.map((option) => <option value={option.key} key={option.key}>{option.label}</option>)}</select></label>
+            <button className="order-button" type="button" onClick={() => setDescending((value) => !value)}>{descending ? "从高到低 ↓" : "从低到高 ↑"}</button>
+            <div className="preset-buttons"><span>快捷：</span><button onClick={() => preset("active")}>放量活跃</button><button onClick={() => preset("value")}>低估值</button><button onClick={() => preset("midcap")}>中小市值</button></div>
+            <button className="reset-button" type="button" onClick={() => setFilters(emptyFilters())}>清空{activeFilterCount ? ` (${activeFilterCount})` : ""}</button>
           </div>
-        </div>
-        <div className="stock-table-wrap">
-          <table className="stock-table">
-            <thead><tr><th>股票</th><th>最新价</th><th>涨跌幅</th><th>成交额</th><th>换手率</th><th>市盈率</th><th><span className="sr-only">添加自选</span></th></tr></thead>
-            <tbody>
-              {rows.map((item) => (
-                <tr key={item.secid} onClick={() => setSelected(item)}>
-                  <td><b>{item.name}</b><small>{item.code}</small></td>
-                  <td className="mono">{item.price.toFixed(2)}</td>
-                  <td><Tone value={item.change}>{signed(item.change)}%</Tone></td>
-                  <td className="muted-cell">{item.turnover ? compact(item.turnover) : "—"}</td>
-                  <td className="muted-cell">{item.turnoverRate ? `${item.turnoverRate.toFixed(2)}%` : "—"}</td>
-                  <td className="muted-cell">{item.pe ? item.pe.toFixed(1) : "—"}</td>
-                  <td><button className={isWatched(item.secid) ? "watch active" : "watch"} type="button" aria-label={isWatched(item.secid) ? `从自选移除${item.name}` : `添加${item.name}到自选`} onClick={(event) => { event.stopPropagation(); toggleWatch(item); }}>☆</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {!rows.length && <div className="table-empty">{rankTab === "watchlist" ? "搜索股票或点击 ☆，建立你的自选清单。" : "个股行情正在更新，请稍后刷新。"}</div>}
+          <div className="filter-grid">
+            {filterFields.map((field) => <label key={field.key}><span>{field.label}<i>{field.unit}</i></span><div><input type="number" step={field.step} value={filters[field.key].min} onChange={(event) => updateFilter(field.key, "min", event.target.value)} placeholder="不限" aria-label={`${field.label}最小值`} /><b>—</b><input type="number" step={field.step} value={filters[field.key].max} onChange={(event) => updateFilter(field.key, "max", event.target.value)} placeholder="不限" aria-label={`${field.label}最大值`} /></div></label>)}
+          </div>
+          <div className="result-bar"><b>{rankingRows.length}</b> 只符合条件 <span>当前按“{sortOptions.find((item) => item.key === sortKey)?.label}”{descending ? "降序" : "升序"}</span></div>
+          <div className="stock-table-wrap"><table className="stock-table">
+            <thead><tr><th>#</th><th>股票</th><th>收盘价</th><th>涨幅</th><th>换手率</th><th>量比</th><th>市盈率</th><th>总市值</th><th>成交额</th><th>自选</th></tr></thead>
+            <tbody>{rankingRows.slice(0, 30).map((item, index) => <tr key={item.secid}><td>{String(index + 1).padStart(2, "0")}</td><td><b>{item.name}</b><small>{item.code}</small></td><td>{item.price.toFixed(2)}</td><td><Tone value={item.change}>{signed(item.change)}%</Tone></td><td>{item.turnoverRate.toFixed(2)}%</td><td>{item.volumeRatio ? item.volumeRatio.toFixed(2) : "—"}</td><td>{item.pe > 0 ? item.pe.toFixed(1) : "亏损"}</td><td>{compact(item.marketCap)}</td><td>{compact(item.turnover)}</td><td><button type="button" className={isWatched(item.secid) ? "watch active" : "watch"} onClick={() => toggleWatch(item)} aria-label={isWatched(item.secid) ? `移除${item.name}自选` : `添加${item.name}自选`}>{isWatched(item.secid) ? "★" : "☆"}</button></td></tr>)}</tbody>
+          </table>{!rankingRows.length && <div className="empty-state">没有符合当前组合条件的股票，请放宽筛选范围。</div>}</div>
         </div>
       </section>
 
       <section className="news-section" id="news">
-        <div className="section-heading news-heading">
-          <div><p>DAILY SIGNALS</p><h2>今日快讯</h2></div>
-          <div className="news-filters" aria-label="资讯筛选">
-            {newsFilters.map((filter) => <button key={filter} className={newsFilter === filter ? "active" : ""} onClick={() => setNewsFilter(filter)}>{filter}</button>)}
-          </div>
-        </div>
+        <div className="section-title"><div><p>DAILY HOT SIGNALS</p><h2>每日热门快讯</h2></div><div className="method-note"><b>每日收盘后定稿</b><span>按 A 股相关性、焦点标签、互动与时效综合排序</span></div></div>
         <div className="news-list">
-          {filteredNews.slice(0, 10).map((item, index) => (
-            <a href={item.url} target="_blank" rel="noreferrer" key={item.id}>
-              <span className="news-number">{String(index + 1).padStart(2, "0")}</span>
-              <div><span className="news-chip">{item.category}</span><h3>{item.title}</h3><p>{item.source} · {timeLabel(item.publishedAt)}</p></div>
-              <span className="news-arrow">↗</span>
-            </a>
-          ))}
-          {!filteredNews.length && <div className="table-empty">这一分类暂时没有新资讯。</div>}
+          {snapshot.news.map((item, index) => <a href={item.url} target="_blank" rel="noreferrer" key={item.id}><span className="news-rank">{String(index + 1).padStart(2, "0")}</span><div><p><span>{item.category}</span>{item.source} · {dayAndTime(item.publishedAt)}</p><h3>{item.title}</h3></div><b className="heat"><i style={{ width: `${item.heat}%` }} />热度 {item.heat}</b><span className="news-arrow">↗</span></a>)}
+          {!snapshot.news.length && <div className="empty-state">正在汇总今日热门资讯…</div>}
         </div>
       </section>
 
-      <footer className="site-footer">
-        <div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股市场雷达</small></p></div>
-        <p>行情自动刷新 · 新闻每 15 分钟更新<br />行情与资讯来自新浪财经、腾讯行情公开数据</p>
-        <p>数据仅供参考，不构成任何投资建议<br />市场有风险，投资需谨慎</p>
-      </footer>
-
-      {selected && (
-        <div className="quote-modal" role="dialog" aria-modal="true" aria-labelledby="quote-title" onMouseDown={() => setSelected(null)}>
-          <article onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" type="button" aria-label="关闭" onClick={() => setSelected(null)}>×</button>
-            <p>QUICK QUOTE · {selected.code}</p><h2 id="quote-title">{selected.name}</h2>
-            <div className="modal-price"><b>{selected.price.toFixed(2)}</b><Tone value={selected.change}>{signed(selected.change)}%</Tone></div>
-            <dl>
-              <div><dt>涨跌额</dt><dd><Tone value={selected.changeAmount}>{signed(selected.changeAmount)}</Tone></dd></div>
-              <div><dt>最高</dt><dd>{selected.high?.toFixed(2) ?? "—"}</dd></div>
-              <div><dt>最低</dt><dd>{selected.low?.toFixed(2) ?? "—"}</dd></div>
-              <div><dt>成交额</dt><dd>{selected.turnover ? compact(selected.turnover) : "—"}</dd></div>
-            </dl>
-            <button className="modal-watch" type="button" onClick={() => toggleWatch(selected)}>{isWatched(selected.secid) ? "已加入自选 · 点击移除" : "+ 加入自选"}</button>
-          </article>
-        </div>
-      )}
+      <footer className="site-footer"><div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股收盘研究台</small></p></div><p>每日 15:35 后刷新收盘价格、热门资讯与次日观察名单<br />行情与资讯来自新浪财经、腾讯行情公开数据</p><p>观察名单由规则模型生成，不构成投资建议<br />市场有风险，投资需谨慎</p></footer>
     </main>
   );
 }
