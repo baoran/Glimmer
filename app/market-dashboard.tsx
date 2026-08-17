@@ -16,6 +16,7 @@ type DailySnapshot = {
 type SortKey = "change" | "turnoverRate" | "volumeRatio" | "pe" | "price" | "marketCap" | "turnover";
 type FilterKey = Exclude<SortKey, "turnover">;
 type Range = { min: string; max: string };
+type Theme = "light" | "dark";
 
 const placeholderIndices: IndexQuote[] = [
   { name: "上证指数", code: "000001", secid: "sh000001", price: 3982.65, change: 1.41, changeAmount: 55.47, high: 3983.51, low: 3924.47, open: 3930.1, previousClose: 3927.18, volume: 706246394459 },
@@ -109,6 +110,7 @@ export function MarketDashboard() {
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<StockQuote[]>([]);
   const [searching, setSearching] = useState(false);
+  const [theme, setTheme] = useState<Theme>("light");
   const searchWrap = useRef<HTMLDivElement>(null);
 
   const loadDaily = useCallback(async (manual = false) => {
@@ -124,6 +126,11 @@ export function MarketDashboard() {
   }, []);
 
   useEffect(() => { void loadDaily(); }, [loadDaily]);
+
+  useEffect(() => {
+    const activeTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    setTheme(activeTheme);
+  }, []);
 
   useEffect(() => {
     const delay = Math.max(60000, new Date(snapshot.nextRefreshAt).getTime() - Date.now() + 120000);
@@ -190,6 +197,12 @@ export function MarketDashboard() {
   }, [snapshot.universe, watchlist, listMode, filters, sortKey, descending]);
 
   const updateFilter = (key: FilterKey, side: keyof Range, value: string) => setFilters((current) => ({ ...current, [key]: { ...current[key], [side]: value } }));
+  const toggleTheme = () => {
+    const nextTheme: Theme = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = nextTheme;
+    window.localStorage.setItem("panmian-theme", nextTheme);
+    setTheme(nextTheme);
+  };
   const preset = (name: "active" | "value" | "midcap") => {
     const next = emptyFilters();
     if (name === "active") { next.change.min = "1"; next.turnoverRate.min = "3"; next.volumeRatio.min = "1.2"; }
@@ -202,7 +215,7 @@ export function MarketDashboard() {
     <main className="site-shell" id="top">
       <header className="topbar">
         <a className="brand" href="#top" aria-label="盘面首页"><span className="brand-mark">盘</span><span>盘面</span><span className="brand-tag">A股收盘研究台</span></a>
-        <nav className="nav" aria-label="主导航"><a href="#market">总览</a><a href="#ideas">明日建议</a><a href="#rankings">筛选榜单</a><a href="#news">每日热讯</a></nav>
+        <nav className="nav" aria-label="主导航"><a href="#market">总览</a><a href="#ideas">选股建议</a><a href="#rankings">筛选榜单</a><a href="#news">每日热讯</a></nav>
         <div className="stock-search" ref={searchWrap}>
           <label className="sr-only" htmlFor="stock-search">搜索股票</label><span aria-hidden="true">⌕</span>
           <input id="stock-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索代码 / 名称" autoComplete="off" />
@@ -210,6 +223,7 @@ export function MarketDashboard() {
             {searching ? <p>正在搜索…</p> : searchResults.length ? searchResults.map((item) => <button type="button" key={item.secid} onClick={() => { toggleWatch(item); setQuery(""); }}><span><b>{item.name}</b><small>{item.code}</small></span><span>{item.price.toFixed(2)} <Tone value={item.change}>{signed(item.change)}%</Tone></span><i>{isWatched(item.secid) ? "已自选" : "+ 自选"}</i></button>) : <p>没有找到沪深 A 股</p>}
           </div>}
         </div>
+        <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={theme === "dark" ? "切换至日间模式" : "切换至夜间模式"} title={theme === "dark" ? "切换至日间模式" : "切换至夜间模式"}><span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span><b>{theme === "dark" ? "日间" : "夜间"}</b></button>
         <div className={snapshot.status === "final" ? "close-status final" : "close-status"}><span />{snapshot.status === "final" ? "收盘定稿" : "盘中预览"}</div>
       </header>
 
@@ -239,7 +253,7 @@ export function MarketDashboard() {
       </section>
 
       <section className="ideas-section" id="ideas">
-        <div className="section-title"><div><p>NEXT SESSION WATCHLIST</p><h2>明日选股建议</h2></div><div className="method-note"><b>六因子量化初筛</b><span>涨幅 · 换手率 · 量比 · 成交额 · 市盈率 · 市值</span></div></div>
+        <div className="section-title"><div><p>STOCK SELECTION</p><h2>选股建议</h2></div><div className="method-note"><b>六因子量化初筛</b><span>涨幅 · 换手率 · 量比 · 成交额 · 市盈率 · 市值</span></div></div>
         <div className="idea-disclaimer"><b>观察名单，不是买入指令。</b> 基于 {formatTradeDate(snapshot.tradeDate)} 收盘数据生成；未纳入收盘后公告、隔夜消息、次日跳空等变量，任何信号都可能失效。</div>
         <div className="idea-grid">
           {snapshot.recommendations.map((item, index) => <article className="idea-card" key={item.secid}>
@@ -251,7 +265,7 @@ export function MarketDashboard() {
             <ul>{item.reasons.slice(0, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul>
             <p><b>主要风险：</b>{item.risks.join("、")}</p>
           </article>)}
-          {!snapshot.recommendations.length && <div className="empty-state">正在生成收盘观察名单…</div>}
+          {!snapshot.recommendations.length && <div className="empty-state">正在生成选股建议…</div>}
         </div>
       </section>
 
@@ -284,7 +298,7 @@ export function MarketDashboard() {
         </div>
       </section>
 
-      <footer className="site-footer"><div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股收盘研究台</small></p></div><p>每日 15:35 后刷新收盘价格、热门资讯与次日观察名单<br />行情与资讯来自新浪财经、腾讯行情公开数据</p><p>观察名单由规则模型生成，不构成投资建议<br />市场有风险，投资需谨慎</p></footer>
+      <footer className="site-footer"><div><span className="brand-mark small">盘</span><p><b>盘面</b><small>A股收盘研究台</small></p></div><p>每日 15:35 后刷新收盘价格、热门资讯与选股建议<br />行情与资讯来自新浪财经、腾讯行情公开数据</p><p>选股建议由规则模型生成，不构成投资建议<br />市场有风险，投资需谨慎</p></footer>
     </main>
   );
 }
